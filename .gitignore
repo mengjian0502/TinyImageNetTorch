@@ -1,0 +1,5 @@
+tiny-imagenet-200
+*.zip
+save/
+*.pth.tar
+.vscode
