@@ -78,6 +78,17 @@ def train(trainloader, net, criterion, optimizer, epoch, args):
         outputs = net(inputs)
         loss = criterion(outputs, targets)
 
+        if args.clp:
+            reg_alpha = torch.tensor(0.).cuda()
+            a_lambda = torch.tensor(args.a_lambda).cuda()
+
+            alpha = []
+            for name, param in net.named_parameters():
+                if 'alpha' in name:
+                    alpha.append(param.item())
+                    reg_alpha += param.item() ** 2
+            loss += a_lambda * (reg_alpha)
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()

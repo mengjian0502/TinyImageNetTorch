@@ -13,11 +13,13 @@ from torch.utils.data import DataLoader
 from data import BatchManagerTinyImageNet
 from torchvision import datasets
 import torchvision.transforms as transforms
-import torchvision.models as models
+import torchvision.models as url_models
 import os
 import time
 import sys
 import logging
+import model
+import model.quant as quant
 
 from torchvision.transforms.transforms import RandomCrop
 
@@ -53,6 +55,17 @@ parser.add_argument('--evaluate', action='store_true', help='evaluate the model'
 # Acceleration
 parser.add_argument('--ngpu', type=int, default=3, help='0 = CPU.')
 parser.add_argument('--workers', type=int, default=16,help='number of data loading workers (default: 2)')
+
+# quantization
+parser.add_argument('--wbit', type=int, default=4, help='weight precision')
+parser.add_argument('--abit', type=int, default=4, help='activation precision')
+parser.add_argument('--alpha_init', type=int, default=10., help='initial activation clipping')
+parser.add_argument('--q_mode', type=str, default="mean", help='weight quantization mode')
+parser.add_argument('--k', type=int, default=2, help='coefficient of quantization boundary')
+
+# activation clipping(PACT)
+parser.add_argument('--clp', dest='clp', action='store_true', help='using clipped relu in each stage')
+parser.add_argument('--a_lambda', type=float, default=0.01, help='The parameter of alpha L2 regularization')
 
 # Fine-tuning
 parser.add_argument('--fine_tune', dest='fine_tune', action='store_true',
@@ -149,39 +162,49 @@ def main():
         # define batch_manager
         trainloader = torch.utils.data.DataLoader(train_data, shuffle=True, num_workers=8, batch_size=args.batch_size)
         testloader = torch.utils.data.DataLoader(test_data, shuffle=False, num_workers=8, batch_size=args.batch_size)       
+        num_classes = 200
     else:
         raise ValueError("Dataset must be either cifar10 or imagenet")  
 
     # Prepare the model
     logger.info('==> Building model..\n')
-    net = models.resnet18(pretrained=True)  # pre-trained imagenet model
+    # net = models.resnet18(pretrained=True)  # pre-trained imagenet model
+    # net = models.resnet101(pretrained=True)
+
+    model_cfg = getattr(model, args.model)
+    model_cfg.kwargs.update({"num_classes": num_classes, "wbit": args.wbit, "abit":args.abit, "alpha_init": args.alpha_init, "mode": args.q_mode, "k": args.k})
+    net = model_cfg.base(*model_cfg.args, **model_cfg.kwargs) 
 
     num_ftrs = net.fc.in_features
-    net.conv1 = nn.Conv2d(3,64, kernel_size=(3,3), stride=(1,1), padding=(1,1))
+    # net.conv1 = nn.Conv2d(3,64, kernel_size=(3,3), stride=(1,1), padding=(1,1))
+    net.conv1 = quant.int_conv2d(3,64, kernel_size=(3,3), stride=(1,1), padding=(1,1), nbit=args.wbit, mode=args.q_mode, k=args.k)
     net.maxpool = nn.Sequential()
     net.fc = nn.Linear(num_ftrs, 200)
 
     logger.info(net)
     start_epoch = 0
     
-    # if args.fine_tune:
-    #     new_state_dict = OrderedDict()
-    #     logger.info("=> loading checkpoint '{}'".format(args.resume))
-    #     checkpoint = torch.load(args.resume)
-    #     for k, v in checkpoint['state_dict'].items():
-    #         name = k
-    #         new_state_dict[name] = v
-        
-    #     state_tmp = net.state_dict()
+    if args.fine_tune:
+        new_state_dict = OrderedDict()
+        logger.info("=> loading checkpoint '{}'".format(args.resume))
+        checkpoint = torch.load(args.resume)
+        for k, v in checkpoint['state_dict'].items():
+            name = k[7:]
+            
+            if 'fc' in name or name == 'conv1.weight':
+                continue
 
-    #     if 'state_dict' in checkpoint.keys():
-    #         state_tmp.update(new_state_dict)
-        
-    #         net.load_state_dict(state_tmp)
-    #         logger.info("=> loaded checkpoint '{} | Acc={}'".format(args.resume, checkpoint['acc']))
-    #     else:
-    #         raise ValueError('no state_dict found')  
+            new_state_dict[name] = v
+        state_tmp = net.state_dict()
 
+        if 'state_dict' in checkpoint.keys():
+            state_tmp.update(new_state_dict)
+        
+            net.load_state_dict(state_tmp)
+            logger.info("=> loaded checkpoint '{} | Acc={}'".format(args.resume, checkpoint['acc']))
+        else:
+            raise ValueError('no state_dict found')  
+    
     if args.use_cuda:
         if args.ngpu > 1:
             net = torch.nn.DataParallel(net)

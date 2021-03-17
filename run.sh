@@ -6,14 +6,14 @@ if [ ! -d "$DIRECTORY" ]; then
     mkdir ./save
 fi
 
-save_path="./save/resnet18_tinyImgNet/"
-log_file="resnet18_tinyImgNet_eval.log"
+save_path="./save/resnet101_tinyImgNet/"
+log_file="resnet101_tinyImgNet_eval.log"
 
 dataset=tiny_imagenet
-lr=0.001
+lr=0.0005
 wd=0.0
 epochs=15
-batch_size=100
+batch_size=60
 
 $PYTHON train.py --dataset ${dataset} \
     --data_path ./tiny-imagenet-200/ \
